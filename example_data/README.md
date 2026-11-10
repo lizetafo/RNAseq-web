@@ -17,6 +17,10 @@ Public datasets from NCBI GEO, reduced to the samples used here:
 | `prostate_hypoxia/` | [GSE106305](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE106305): Guo et al., *Nature Communications* (2019) | LNCaP (empty vector) and PC3 (siCtrl), normoxia and hypoxia, 2 replicates each |
 | `tumor_vs_normal/` | [GSE50760](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE50760): colorectal cancer | 18 primary colorectal tumors (SRR975551–SRR975568) and 19 normal colon samples (SRR975569–SRR975587) |
 
+**Please cite the original studies if you use these data:**
+- Guo H, Ci X, Ahmed M, et al. ONECUT2 is a driver of neuroendocrine prostate cancer. *Nature Communications*. 2019;10(1):278. https://doi.org/10.1038/s41467-018-08133-6
+- Kim SK, Kim SY, Kim JH, et al. A nineteen gene-based risk score classifier predicts prognosis of colorectal cancer patients. *Molecular Oncology*. 2014;8(8):1653–1666. https://doi.org/10.1016/j.molonc.2014.06.016
+
 ## Input format
 
 **Counts:** first column = gene IDs; one column per sample; raw integer counts (for example from featureCounts or HTSeq). Do not use normalized values such as TPM or FPKM.

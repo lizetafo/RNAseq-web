@@ -18,8 +18,8 @@ Connect Cloud needs a `manifest.json` file that lists the exact R packages the a
 
 1. Go to **connect.posit.cloud** and sign up for a free account. Signing in with GitHub is easiest.
 2. Click **Publish**, then choose **Shiny** as the framework.
-3. If asked, install the **Posit Connect Cloud GitHub app** and give it access to `rnaseq-shiny-web`.
-4. Choose the repository `lizetafo/rnaseq-shiny-web`, the branch `main`, and `app.R` as the primary file.
+3. If asked, install the **Posit Connect Cloud GitHub app** and give it access to `RNAseq-web`.
+4. Choose the repository `lizetafo/RNAseq-web`, the branch `main`, and `app.R` as the primary file.
 5. Click **Publish**. The first build installs all packages and can take 10–30 minutes. Later updates are faster.
 6. When it finishes, copy the app's link.
 
