@@ -44,6 +44,9 @@ Step-by-step instructions with screenshots: **[docs/user_guide.md](docs/user_gui
 ## 🌐 Online version
 The app can be hosted free on Posit Connect Cloud, so anyone can use it from a link: see [docs/deploy_connect_cloud.md](docs/deploy_connect_cloud.md).
 
+## 🔒 Data privacy
+The online app runs on **Posit Connect Cloud**. Files you upload are sent to Posit's servers and processed there during your session. The app does not save them, but **do not upload confidential, unpublished or patient-identifiable data** to the online version. For sensitive data, download this repository and run the app on your own computer (see Quick start), where your files never leave your machine.
+
 ## 🧪 Example datasets
 | Dataset | Organism | Comparison |
 |---|---|---|

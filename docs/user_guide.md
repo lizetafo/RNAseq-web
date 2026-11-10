@@ -46,7 +46,7 @@ With contrast `Condition, Hypoxia, Normoxia`, a **positive log2 fold change mean
 
 6. Click **Run**. If no control group is chosen, the app asks for one. DESeq2 usually takes from a few seconds to about a minute.
 
-> **Privacy:** uploaded files are used only during your session and are not saved by the app. If you use an online copy of the app, the files are processed on that server. For unpublished data, run the app on your own computer.
+> **Privacy:** the online version runs on Posit Connect Cloud, so uploaded files are processed on Posit's servers during your session. The app does not save them. Do not upload confidential, unpublished or patient-identifiable data online; run the app on your own computer instead.
 
 ---
 

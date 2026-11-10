@@ -737,6 +737,16 @@ ui<- fluidPage(
     sidebarPanel(
       class= "mySidebar",
       
+      #data notice shown at the top of the sidebar for visitors of the online version
+      div(style="background:#fff8e1; border-left:4px solid #f0ad4e; padding:10px 12px; margin-bottom:15px; font-size:13px;",
+          tags$b("Data notice"), tags$br(),
+          "The online version of this app runs on Posit Connect Cloud, so files you upload are sent to Posit's servers and processed there during your session. The app does not save your files.",
+          tags$br(), tags$br(),
+          tags$b("Do not upload confidential, unpublished or patient-identifiable data."),
+          " For sensitive data, download the app from ",
+          tags$a(href="https://github.com/lizetafo/RNAseq-web", target="_blank", "GitHub"),
+          " and run it on your own computer."),
+      
       fileInput(inputId = "Count",  #using fileinput to ulpad count and meta file
                 "Upload Counts File", 
                 accept = c(".csv", ".txt", ".tsv")),
@@ -754,8 +764,6 @@ ui<- fluidPage(
       helpText("Upload data and automatically detect experimental design"),
       #lets visitors try the app without their own data
       actionButton("load_example", "Or load example data (prostate hypoxia)", class="btn-default btn-sm"),
-      helpText("Uploaded files are used only during your session and are not saved by the app.",
-               "For unpublished data, you can run the app on your own computer."),
       
       tags$hr(),
       
