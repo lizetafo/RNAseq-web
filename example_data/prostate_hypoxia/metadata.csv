@@ -1,0 +1,9 @@
+ID,Condition,CellLine
+PC3_Normoxia_S1,Normoxia,PC3
+LNCAP_Hypoxia_S1,Hypoxia,LNCaP
+LNCAP_Hypoxia_S2,Hypoxia,LNCaP
+LNCAP_Normoxia_S2,Normoxia,LNCaP
+PC3_Hypoxia_S1,Hypoxia,PC3
+PC3_Hypoxia_S2,Hypoxia,PC3
+PC3_Normoxia_S2,Normoxia,PC3
+LNCAP_Normoxia_S1,Normoxia,LNCaP

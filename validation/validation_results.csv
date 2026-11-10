@@ -1,0 +1,4 @@
+"dataset","design","comparison","genes_tested","same_genes","max_difference_results","max_difference_normalized_counts","significant_app","significant_deseq2"
+"prostate_hypoxia","~Condition","Hypoxia vs Normoxia",25062,TRUE,0,0,302,302
+"prostate_hypoxia","~CellLine + Condition","Hypoxia vs Normoxia",25062,TRUE,0,0,4895,4895
+"tumor_vs_normal","~type","cancer vs normal",28225,TRUE,0,0,6834,6834
