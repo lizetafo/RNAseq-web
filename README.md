@@ -87,7 +87,7 @@ For both datasets, the app's results were compared with DESeq2 run directly. Eve
 ```
 
 ## 🛠️ Built with
-R · Shiny · DESeq2 · fgsea · AnnotationDbi · ComplexHeatmap · ggplot2 · ggrepel · dplyr · DT
+R · Shiny · DESeq2 · fgsea · AnnotationDbi · ComplexHeatmap · ggplot2 · ggrepel · dplyr · DT . developed with AI-assisted coding (Claude by Anthropic)
 
 ## 👩🏾‍🔬 Author
 **Elizabeth Etafo**, Ph.D. candidate, Pharmaceutical Sciences, University of Nebraska Medical Center
