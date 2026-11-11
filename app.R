@@ -28,7 +28,7 @@ if(FALSE){
   library(RColorBrewer); library(DT)
   library(org.Hs.eg.db); library(org.Mm.eg.db); library(org.Rn.eg.db)
   library(org.Dm.eg.db); library(org.Dr.eg.db); library(org.Sc.sgd.db)
-  library(fgsea)
+  library(fgsea); library(readxl)
 }
 
 loadlib <- function(extra_Bioc=NULL, other_extra=NULL){  #incase you need to load extra packages
@@ -97,6 +97,17 @@ clean_sample_names<- function(x){
 
 #reads one count table: a full matrix, a featureCounts table, or a per-sample HTSeq / STAR file
 read_count_table<- function(path, name = basename(path)){
+  #Excel files: first sheet, written to a temporary tab-separated file
+  if(grepl("\\.xlsx?$", name, ignore.case = TRUE)){
+    if(!requireNamespace("readxl", quietly = TRUE)) stop("Reading Excel files needs the 'readxl' package.")
+    x<- as.data.frame(readxl::read_excel(path, sheet = 1, col_names = FALSE, col_types = "text", .name_repair = "minimal"))
+    x<- x[!(is.na(x[[1]]) & rowSums(!is.na(x)) == 0), , drop = FALSE]
+    while(nrow(x) > 0 && grepl("^#", as.character(x[1, 1]))) x<- x[-1, , drop = FALSE]   #comment lines
+    x[is.na(x)]<- ""
+    tmp<- tempfile(fileext = ".tsv")
+    utils::write.table(x, tmp, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
+    path<- tmp; name<- sub("\\.xlsx?$", ".tsv", name, ignore.case = TRUE)
+  }
   is_csv<- grepl("\\.csv(\\.gz)?$", name, ignore.case = TRUE)
   lines<- readLines(path, n = 60, warn = FALSE)            #readLines also reads .gz files
   lines<- lines[nzchar(lines) & !grepl("^#", lines)]
@@ -271,8 +282,9 @@ download_geo_file<- function(url, dest){
 }
 
 #parses the sample information from GEO Series Matrix file(s) into a sample sheet
+#attributes: "ids" (names each sample may have in count files) and "organism"
 parse_series_matrix<- function(paths){
-  rows<- list()
+  rows<- list(); ids<- list(); orgs<- character(0)
   for(p in paths){
     ln<- readLines(p, warn = FALSE)
     ln<- ln[grepl("^!Sample_", ln)]
@@ -283,19 +295,26 @@ parse_series_matrix<- function(paths){
     if(is.null(gsm)) next
     df<- data.frame(row.names = gsm, check.names = FALSE, stringsAsFactors = FALSE)
     ch<- sp[key == "!Sample_characteristics_ch1"]
-    k_n<- 0
     for(r in ch){
       vals<- r[-1]
       for(j in seq_along(vals)){
         v<- vals[j]; if(!nzchar(v)) next
         if(grepl(":", v)){ nm<- trimws(sub(":.*$", "", v)); val<- trimws(sub("^[^:]*:", "", v)) }
-        else { k_n<- k_n + 1; nm<- "characteristic"; val<- trimws(v) }
+        else { nm<- "characteristic"; val<- trimws(v) }
         if(!nm %in% names(df)) df[[nm]]<- NA_character_
         df[gsm[j], nm]<- val
       }
     }
     src<- get1("!Sample_source_name_ch1"); if(!is.null(src)) df[["source"]]<- trimws(src)
     tit<- get1("!Sample_title"); if(!is.null(tit)) df[["title"]]<- trimws(tit)
+    org<- get1("!Sample_organism_ch1"); if(!is.null(org)) orgs<- c(orgs, org)
+    #other names of each sample (title, library names, descriptions) to match count-file columns
+    extra<- c(list(tit), lapply(sp[key %in% c("!Sample_description", "!Sample_library_name")], `[`, -1))
+    for(j in seq_along(gsm)){
+      v<- unlist(lapply(extra, function(x) if(length(x) >= j) x[j] else NULL))
+      v<- trimws(sub("^[^:]*:\\s*", "", v[nzchar(v)]))            #"Library name: sample 1" -> "sample 1"
+      ids[[gsm[j]]]<- unique(c(gsm[j], v))
+    }
     rows[[length(rows) + 1]]<- df
   }
   if(length(rows) == 0) stop("No sample information found in the GEO Series Matrix.")
@@ -309,57 +328,155 @@ parse_series_matrix<- function(paths){
   keep<- vapply(names(meta), function(c) c == "title" || length(unique(meta[[c]])) > 1, logical(1))
   meta<- meta[, keep, drop = FALSE]
   meta[is.na(meta)]<- ""
+  attr(meta, "ids")<- ids
+  attr(meta, "organism")<- if(length(orgs)) names(sort(table(orgs), decreasing = TRUE))[1] else NA_character_
   meta
 }
 
-#downloads NCBI raw counts and the Series Matrix for a GEO series (GSE)
+#matches count-table columns to GEO samples (GSM IDs) using the sample names GEO lists
+#returns a vector of GSM IDs (NA where no unique match)
+match_samples_to_geo<- function(cols, ids){
+  norm<- function(x) tolower(gsub("[^A-Za-z0-9]", "", x))
+  nc<- norm(cols)
+  vapply(seq_along(cols), function(i){
+    hit<- names(ids)[vapply(ids, function(v){
+      v<- norm(v); v<- v[nchar(v) >= 4]
+      any(v == nc[i]) || any(vapply(v, function(x) grepl(x, nc[i], fixed = TRUE), logical(1)))
+    }, logical(1))]
+    if(length(hit) == 1) hit else NA_character_
+  }, character(1))
+}
+
+#guesses the gene ID type from the IDs (used to pre-set the annotation)
+guess_id_type<- function(ids){
+  ids<- utils::head(ids[!is.na(ids)], 500)
+  if(mean(grepl("^ENS[A-Z]*G[0-9]", ids)) > 0.5) return("ensembl")
+  if(mean(grepl("^[0-9]+$", ids)) > 0.5) return("entrezid")
+  "symbol"
+}
+
+#maps a GEO organism name to the app's organism choices
+organism_choice<- function(org){
+  if(is.na(org)) return(NA_character_)
+  m<- c("Homo sapiens" = "human", "Mus musculus" = "mouse", "Rattus norvegicus" = "rat",
+        "Drosophila melanogaster" = "fly", "Danio rerio" = "zfish", "Saccharomyces cerevisiae" = "yeast")
+  if(org %in% names(m)) m[[org]] else "other"
+}
+
+#lists file names in a GEO folder (Series Matrix or supplementary files)
+list_geo_dir<- function(url){
+  idx<- tempfile(fileext = ".html")
+  ok<- tryCatch({ utils::download.file(url, idx, mode = "wb", quiet = TRUE); TRUE }, error = function(e) FALSE, warning = function(w) FALSE)
+  if(!ok || !file.exists(idx)) return(character(0))
+  html<- paste(readLines(idx, warn = FALSE), collapse = " ")
+  f<- regmatches(html, gregexpr('href="[^"/?][^"]*"', html))[[1]]
+  f<- utils::URLdecode(gsub('^href="|"$', "", f))
+  unique(basename(f[grepl("^GSE", basename(f))]))
+}
+
+#downloads raw counts and sample information for a GEO series (GSE)
+#counts: NCBI-generated raw counts if available, otherwise the authors' count file(s)
 load_geo<- function(gse,
                     base_url = getOption("rnaseqapp.geo_base", "https://www.ncbi.nlm.nih.gov"),
                     ftp_url  = getOption("rnaseqapp.geo_ftp",  "https://ftp.ncbi.nlm.nih.gov")){
   gse<- toupper(trimws(gse))
   if(!grepl("^GSE[0-9]+$", gse)) stop("Enter a GEO series accession such as GSE106305.")
   notes<- character(0)
-  #1. NCBI-generated raw counts (human, then mouse)
+  stub<- sub("[0-9]{1,3}$", "nnn", gse)
+  sdir<- paste0(ftp_url, "/geo/series/", stub, "/", gse, "/")
+  
+  #1. sample information from the Series Matrix file(s)
+  sm<- tempfile(fileext = ".txt.gz")
+  sm_files<- if(download_geo_file(paste0(sdir, "matrix/", gse, "_series_matrix.txt.gz"), sm)) sm else character(0)
+  if(length(sm_files) == 0){
+    for(x in grep("_series_matrix\\.txt\\.gz$", list_geo_dir(paste0(sdir, "matrix/")), value = TRUE)){
+      d<- tempfile(fileext = ".txt.gz"); if(download_geo_file(paste0(sdir, "matrix/", x), d)) sm_files<- c(sm_files, d)
+    }
+  }
+  meta<- if(length(sm_files) > 0) parse_series_matrix(sm_files) else NULL
+  
+  #2a. NCBI-generated raw counts (human, then mouse)
   builds<- c(human = "GRCh38.p13", mouse = "GRCm39")
-  cnt_file<- tempfile(fileext = ".tsv.gz"); organism<- NULL
+  cnt_file<- tempfile(fileext = ".tsv.gz"); organism<- NULL; id_type<- "entrezid"; counts<- NULL; source<- NULL
   for(org in names(builds)){
     url<- paste0(base_url, "/geo/download/?type=rnaseq_counts&acc=", gse, "&format=file&file=",
                  gse, "_raw_counts_", builds[[org]], "_NCBI.tsv.gz")
-    if(download_geo_file(url, cnt_file)){ organism<- org; break }
-  }
-  if(is.null(organism))
-    stop(paste0("NCBI raw counts are not available for ", gse, ". NCBI only processes some human and mouse RNA-seq studies. ",
-                "Check the GEO page for a 'Download RNA-seq counts' button, or download the authors' count files and upload them."))
-  counts<- read_count_table(cnt_file, paste0(gse, "_raw_counts.tsv.gz"))
-  chk<- check_count_values(counts); counts<- chk$counts
-  #2. sample information from the Series Matrix file(s)
-  stub<- sub("[0-9]{1,3}$", "nnn", gse)
-  mdir<- paste0(ftp_url, "/geo/series/", stub, "/", gse, "/matrix/")
-  sm<- tempfile(fileext = ".txt.gz")
-  sm_files<- if(download_geo_file(paste0(mdir, gse, "_series_matrix.txt.gz"), sm)) sm else character(0)
-  if(length(sm_files) == 0){
-    idx<- tempfile(fileext = ".html")
-    if(download_geo_file(mdir, idx) || file.exists(idx)){
-      html<- paste(readLines(idx, warn = FALSE), collapse = " ")
-      f<- unique(regmatches(html, gregexpr("GSE[0-9]+(-GPL[0-9]+)?_series_matrix\\.txt\\.gz", html))[[1]])
-      for(x in f){ d<- tempfile(fileext = ".txt.gz"); if(download_geo_file(paste0(mdir, x), d)) sm_files<- c(sm_files, d) }
+    if(download_geo_file(url, cnt_file)){
+      organism<- org
+      counts<- check_count_values(read_count_table(cnt_file, paste0(gse, "_raw_counts.tsv.gz")))$counts
+      source<- "NCBI"
+      break
     }
   }
-  if(length(sm_files) > 0){
-    meta<- parse_series_matrix(sm_files)
-    both<- intersect(colnames(counts), rownames(meta))
-    if(length(both) < 2) stop("The sample information does not match the count table for this series.")
-    if(length(both) < ncol(counts)) notes<- c(notes, paste0(ncol(counts) - length(both), " samples without sample information were left out."))
-    if(length(both) < nrow(meta)) notes<- c(notes, paste0(nrow(meta) - length(both), " samples in the series have no NCBI counts (for example non-RNA-seq samples) and were left out."))
-    counts<- counts[, both, drop = FALSE]; meta<- meta[both, , drop = FALSE]
+  
+  #2b. otherwise: the authors' supplementary count file(s)
+  tried<- character(0); normalized<- character(0)
+  if(is.null(counts)){
+    sup<- list_geo_dir(paste0(sdir, "suppl/"))
+    table_ext<- "\\.(txt|tsv|csv|tab|xlsx|xls)(\\.gz)?$"
+    cand<- sup[grepl(table_ext, sup, ignore.case = TRUE) & !grepl("_RAW\\.tar$", sup)]
+    looks_norm<- grepl("fpkm|rpkm|tpm|cpm|normali[sz]ed|vst|rlog|log2|deseq|edger|limma|diff|result|deg", cand, ignore.case = TRUE)
+    looks_count<- grepl("count|featurecount|htseq|raw|reads|expected|matrix", cand, ignore.case = TRUE)
+    cand<- c(cand[looks_count & !looks_norm], cand[!looks_count & !looks_norm], cand[looks_norm])
+    for(x in utils::head(cand, 6)){
+      d<- file.path(tempdir(), paste0("geo_", x))
+      if(!download_geo_file(paste0(sdir, "suppl/", utils::URLencode(x)), d)) next
+      tried<- c(tried, x)
+      m<- tryCatch(read_count_table(d, x), error = function(e) NULL)
+      if(is.null(m) || ncol(m) < 2) next
+      chk<- tryCatch(check_count_values(m), error = function(e) NULL)
+      if(is.null(chk)){ normalized<- c(normalized, x); next }
+      counts<- chk$counts; source<- x; id_type<- guess_id_type(rownames(counts))
+      break
+    }
+    organism<- if(!is.null(meta)) organism_choice(attr(meta, "organism")) else NA_character_
+  }
+  
+  if(is.null(counts)){
+    msg<- paste0("No raw counts found for ", gse, ". NCBI has not made raw counts for this study")
+    if(length(normalized) > 0) msg<- paste0(msg, ", and the authors' file(s) contain normalized values, not raw counts (", paste(normalized, collapse = ", "), "). DESeq2 needs raw counts.")
+    else if(length(tried) > 0) msg<- paste0(msg, ", and the authors' file(s) could not be read as a count table (", paste(tried, collapse = ", "), "). Download them from GEO and upload them with 'Upload files'.")
+    else msg<- paste0(msg, ", and no count table was found among the authors' files. If the study has a '_RAW.tar' of per-sample count files, download it from GEO and upload it with 'Upload files'.")
+    stop(msg)
+  }
+  
+  #3. put counts and sample information together
+  if(!is.null(meta)){
+    ids<- attr(meta, "ids")
+    if(!all(colnames(counts) %in% rownames(meta))){
+      #the authors' columns use their own sample names: match them to GEO samples
+      gsm<- match_samples_to_geo(colnames(counts), ids)
+      if(!anyNA(gsm) && !anyDuplicated(gsm)){
+        colnames(counts)<- gsm
+        notes<- c(notes, "Matched the count-file columns to the GEO samples by sample name.")
+      }
+    }
+    both<- rownames(meta)[rownames(meta) %in% colnames(counts)]   #GEO sample order
+    if(length(both) >= 2){
+      if(length(both) < ncol(counts)) notes<- c(notes, paste0(ncol(counts) - length(both), " samples without sample information were left out."))
+      if(length(both) < nrow(meta)) notes<- c(notes, paste0(nrow(meta) - length(both), " samples in the series have no counts in this file (for example non-RNA-seq samples) and were left out."))
+      counts<- counts[, both, drop = FALSE]; meta<- meta[both, , drop = FALSE]
+    } else {
+      #could not match: keep the count columns and let the user fill in the groups
+      meta<- data.frame(Group = rep("", ncol(counts)), row.names = colnames(counts), stringsAsFactors = FALSE)
+      notes<- c(notes, "The sample names in the count file could not be matched to the GEO samples. Fill in the Group column in the Sample Sheet tab (the GEO page lists which sample is which).")
+    }
   } else {
     meta<- data.frame(Group = rep("", ncol(counts)), row.names = colnames(counts), stringsAsFactors = FALSE)
     notes<- c(notes, "The sample information could not be downloaded. Fill in the Group column in the Sample Sheet tab.")
   }
-  notes<- c(notes, paste0("Loaded NCBI raw counts for ", gse, " (", organism, ", ", ncol(counts), " samples, gene IDs are Entrez IDs). ",
-                          "NCBI counts are made with one standard pipeline, so they may differ slightly from the original study."))
-  list(counts = counts, metadata = meta, organism = organism, notes = notes, gse = gse)
+  attr(meta, "ids")<- NULL; attr(meta, "organism")<- NULL
+  
+  if(identical(source, "NCBI")){
+    notes<- c(notes, paste0("Loaded NCBI raw counts for ", gse, " (", organism, ", ", ncol(counts), " samples, gene IDs are Entrez IDs). ",
+                            "NCBI counts are made with one standard pipeline, so they may differ slightly from the original study."))
+  } else {
+    notes<- c(notes, paste0("NCBI raw counts are not available for ", gse, ", so the authors' count file was used: ", source,
+                            " (", ncol(counts), " samples). Check the organism and ID type settings."))
+  }
+  list(counts = counts, metadata = meta, organism = organism, id_type = id_type, notes = notes, gse = gse)
 }
+
 
 ########################################################################
 ################Function to quality check data##########################
@@ -1088,8 +1205,8 @@ ui<- fluidPage(
                    choices = c("Upload files" = "upload", "Load from GEO" = "geo")),
       conditionalPanel(condition = "input.input_mode == 'upload'",
         fileInput(inputId = "Count", "Upload Counts File(s)", multiple = TRUE,
-                  accept = c(".csv", ".txt", ".tsv", ".tab", ".gz", ".tar", ".tgz", ".zip")),
-        helpText("One count table (genes x samples), a featureCounts output, several per-sample count files (HTSeq or STAR), or a GEO '_RAW.tar' bundle. CSV, TSV or TXT, also .gz. Must be raw counts, not FPKM or TPM."),
+                  accept = c(".csv", ".txt", ".tsv", ".tab", ".gz", ".tar", ".tgz", ".zip", ".xlsx", ".xls")),
+        helpText("One count table (genes x samples), a featureCounts output, several per-sample count files (HTSeq or STAR), or a GEO '_RAW.tar' bundle. CSV, TSV, TXT or Excel, also .gz. Must be raw counts, not FPKM or TPM."),
         fileInput(inputId = "Metadata", "Upload Metadata File (optional)",
                   accept = c(".csv", ".txt", ".tsv")),
         helpText("One row per sample. No sample sheet? Leave this empty and fill one in on the Sample Sheet tab."),
@@ -1101,7 +1218,7 @@ ui<- fluidPage(
       conditionalPanel(condition = "input.input_mode == 'geo'",
         textInput("geo_acc", "GEO series accession", placeholder = "e.g. GSE106305"),
         actionButton("load_geo", "Load from GEO", class="btn-info"),
-        helpText("Downloads NCBI's raw counts for the series (human and mouse RNA-seq studies that NCBI has processed) and builds the sample sheet from the GEO sample information. Check the Sample Sheet tab afterwards.")
+        helpText("Uses NCBI's raw counts for the series when available (many human and mouse studies), otherwise the authors' own count file, and builds the sample sheet from the GEO sample information. Check the Sample Sheet tab and the organism / ID type afterwards.")
       ),
       br(),
       #lets visitors try the app without their own data
@@ -1380,6 +1497,15 @@ server<- function(input, output, session){
   meta_ver<- reactiveVal(0)
   set_draft<- function(m){ meta_draft(m); meta_ver(isolate(meta_ver()) + 1) }
   
+  #turns an analysis error into a readable message in the app
+  #(the hosting server hides ordinary error messages as "An error has occurred")
+  show_errors<- function(expr){
+    tryCatch(expr, error = function(e){
+      if(inherits(e, "shiny.silent.error")) stop(e)   #validation messages pass through unchanged
+      validate(need(FALSE, paste("Problem:", conditionMessage(e))))
+    })
+  }
+  
   #value of a reactive, or NULL if it failed (so observers never stop the app on an analysis error)
   safe_value<- function(expr) tryCatch(expr, error = function(e) NULL)
   
@@ -1397,6 +1523,9 @@ server<- function(input, output, session){
     #a grouping column has 2-10 groups, no empty values, and replicates (not one value per sample)
      meta<- dat$metadata
       factor_cols<- names(meta)
+      #columns with typical names for the comparison are tried first (e.g. treatment before cell_line)
+      pref<- grepl("condition|treatment|group|genotype|disease|status|protocol|agent|time|stimul|infect", factor_cols, ignore.case = TRUE)
+      factor_cols<- c(factor_cols[pref], factor_cols[!pref])
       
       candidate<-NULL
       for (col in factor_cols){
@@ -1479,8 +1608,8 @@ server<- function(input, output, session){
       g<- withProgress(message = "Downloading from GEO (can take a minute)...", value = 0.3, {
         load_geo(input$geo_acc)
       })
-      updateSelectInput(session, "Orgdb", selected = g$organism)
-      updateSelectInput(session, "idtype", selected = "entrezid")
+      if(!is.na(g$organism)) updateSelectInput(session, "Orgdb", selected = g$organism)
+      updateSelectInput(session, "idtype", selected = g$id_type)
       setup_design(list(counts = g$counts, metadata = g$metadata, notes = g$notes))
       updateTabsetPanel(session, "main_tabs", selected = "Sample Sheet")
     }, error = report_error)
@@ -1556,29 +1685,47 @@ server<- function(input, output, session){
   }, ignoreInit = TRUE)
 
   #when the reference column changes, offer its groups as control-group choices
-  observeEvent(input$ref_col, {
-    req(data_store$dat)
-    col<- trimws(input$ref_col)
+  #metadata of the samples that will be analyzed (after the optional subset)
+  meta_in_use<- function(){
     meta<- data_store$dat$metadata
+    sc<- isolate(input$subset_col); sv<- isolate(input$subset_vals)
+    if(!is.null(sc) && nzchar(sc) && sc %in% names(meta) && length(sv) > 0)
+      meta<- meta[as.character(meta[[sc]]) %in% sv, , drop = FALSE]
+    meta
+  }
+  
+  #fills the contrast from the control group: case = another group present in the analyzed samples
+  fill_contrast<- function(){
+    col<- trimws(isolate(input$ref_col)); ref<- isolate(input$ref_levels)
+    meta<- meta_in_use()
+    if(!nzchar(ref) || !col %in% names(meta)) return(invisible(NULL))
+    others<- setdiff(sort(unique(as.character(meta[[col]]))), ref)
+    updateTextInput(session, "contrast",
+                    value = if(length(others) >= 1) paste(col, others[1], ref, sep=",") else "")
+  }
+  
+  #offers the groups of the reference column (only those in the analyzed samples) as control-group choices
+  refresh_ref_choices<- function(){
+    req(data_store$dat)
+    col<- trimws(isolate(input$ref_col))
+    meta<- meta_in_use()
     if(col %in% names(meta)){
       lv<- sort(unique(as.character(meta[[col]])))
-      keep<- if(isTRUE(input$ref_levels %in% lv)) input$ref_levels else ""
+      keep<- if(isTRUE(isolate(input$ref_levels) %in% lv)) isolate(input$ref_levels) else ""
       updateSelectInput(session, "ref_levels",
                         choices = c("-- choose control group --" = "", lv), selected = keep)
+      if(nzchar(keep)) fill_contrast()
     }
-  }, ignoreInit = TRUE)
+  }
+  
+  #when the reference column or the sample subset changes, update the control-group choices and the contrast
+  observeEvent(input$ref_col, refresh_ref_choices(), ignoreInit = TRUE)
+  observeEvent(input$subset_vals, refresh_ref_choices(), ignoreInit = TRUE, ignoreNULL = FALSE)
 
   #when a control group is chosen, fill in the contrast (case vs control)
   observeEvent(input$ref_levels, {
     req(data_store$dat, nzchar(input$ref_levels))
-    col<- trimws(input$ref_col)
-    meta<- data_store$dat$metadata
-    if(col %in% names(meta)){
-      others<- setdiff(sort(unique(as.character(meta[[col]]))), input$ref_levels)
-      if(length(others) >= 1)
-        updateTextInput(session, "contrast",
-                        value = paste(col, others[1], input$ref_levels, sep=","))
-    }
+    fill_contrast()
   }, ignoreInit = TRUE)
    
   
@@ -1649,7 +1796,7 @@ server<- function(input, output, session){
   
   
   ##reactive to run RNA pipeline (DESeq2 model; settings are read when Run is clicked)
-  core<- eventReactive(input$run, {
+  core<- eventReactive(input$run, { show_errors({
     validate(   #ensures count and metadata have been uploaded
       need(!is.null(data_store$dat),
            "Please upload data and detect design first (click 'Upload')"),
@@ -1696,13 +1843,6 @@ server<- function(input, output, session){
     rw<- replicate_warning(meta, trimws(input$ref_col))
     if(!is.null(rw)) notes<- c(notes, rw)
     
-    #Run DESeq2 pipeline
-    dseq<- run_deseq(dat_use$counts, meta, Exp_design = dd$design)
-    
-    #variance-stabilised data for PCA, sample distances and heatmaps
-    #(rlog is slow, so it is only computed when chosen for the heatmap; see rld_obj)
-    vsd<- safe_vst(dseq)
-    
     #Building Contrast Vector, gives error if contrast length is equal to 3
     contrast_vec<- strsplit(input$contrast, ",")[[1]]
     contrast_vec<- trimws(contrast_vec)
@@ -1717,11 +1857,25 @@ server<- function(input, output, session){
     }
     validate(need(length(contrast_vec) == 3,
                   "Invalid contrast. Enter three items: factor, case, control (for example Condition, Hypoxia, Normoxia)."))
+    validate(need(contrast_vec[1] %in% names(meta),
+                  paste0("The contrast column '", contrast_vec[1], "' is not in the sample sheet.")))
+    missing_lv<- setdiff(contrast_vec[2:3], unique(as.character(meta[[contrast_vec[1]]])))
+    validate(need(length(missing_lv) == 0,
+                  paste0("The contrast group(s) ", paste0("'", missing_lv, "'", collapse = ", "),
+                         " have no samples in the analysis. Check the contrast and the sample subset.")))
+    
+    #Run DESeq2 pipeline
+    dseq<- run_deseq(dat_use$counts, meta, Exp_design = dd$design)
+    
+    #variance-stabilised data for PCA, sample distances and heatmaps
+    #(rlog is slow, so it is only computed when chosen for the heatmap; see rld_obj)
+    vsd<- safe_vst(dseq)
+    
     
     list(dat=dat_use, meta=meta, dseq=dseq, vsd=vsd, notes=notes,
          contrast=contrast_vec, alpha=input$alpha, shrink=isTRUE(input$shrink), n=input$n,
          db=orgdb(), id=id_type(), org=input$Orgdb)
-  })
+  })})
   
   #after a run: list every DESeq2 coefficient so advanced users can pick one (e.g. an interaction)
   observeEvent(safe_value(core()), {
@@ -1733,7 +1887,7 @@ server<- function(input, output, session){
   })
   
   ##results for the chosen comparison (changing 'Result to show' does not re-run DESeq2)
-  pipeline<- reactive({
+  pipeline<- reactive({ show_errors({
     cr<- core()
     choice<- input$result_choice
     use_name<- !is.null(choice) && nzchar(choice) && choice != "contrast" && choice %in% DESeq2::resultsNames(cr$dseq)
@@ -1768,7 +1922,7 @@ server<- function(input, output, session){
          top__genes= top__genes,
          notes= notes,
          org= cr$org)
-  })
+  })})
   
   #notes shown above the tabs (subset used, low replication, shrinkage, ...)
   output$run_notes<- renderUI({

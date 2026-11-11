@@ -14,7 +14,7 @@ No installation needed. Click **Or load example data** to explore it with a publ
 ---
 
 ## ✨ Features
-- **Load straight from GEO:** type a GSE number to load NCBI's raw counts and build the sample sheet from the study's sample information (human and mouse studies processed by NCBI)
+- **Load straight from GEO:** type a GSE number to load raw counts (NCBI's when available, otherwise the authors' own count file, including Excel) and build the sample sheet from the study's sample information
 - **Flexible input:** a count matrix, featureCounts output, several per-sample HTSeq/STAR count files, or a GEO `_RAW.tar` bundle; CSV, TSV or TXT, also `.gz`; up to 1 GB
 - **No sample sheet needed:** fill one in inside the app (Sample Sheet tab) and download it
 - **Built-in checks:** stops on normalized data (FPKM, TPM, log values), which DESeq2 cannot use; missing or mismatched samples, sample order, duplicated samples and gene IDs, missing counts
@@ -87,7 +87,7 @@ For both datasets, the app's results were compared with DESeq2 run directly. Eve
 ```
 
 ## 🛠️ Built with
-R · Shiny · DESeq2 · fgsea · AnnotationDbi · ComplexHeatmap · ggplot2 · ggrepel · dplyr · DT . developed with AI-assisted coding (Claude by Anthropic)
+R · Shiny · DESeq2 · fgsea · AnnotationDbi · ComplexHeatmap · ggplot2 · ggrepel · dplyr · DT
 
 ## 👩🏾‍🔬 Author
 **Elizabeth Etafo**, Ph.D. candidate, Pharmaceutical Sciences, University of Nebraska Medical Center

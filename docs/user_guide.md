@@ -20,7 +20,7 @@ Open `app.R` in RStudio and click **Run App**.
 
 There are three ways to get data in. Choose **Data source** at the top of the sidebar:
 
-**A. Load from GEO.** Choose **Load from GEO**, type a series number such as `GSE106305`, and click **Load from GEO**. The app downloads NCBI's raw counts for that study and builds the sample sheet from the study's sample information (for example cell line and treatment). The organism and ID type (Entrez) are set for you. This works for human and mouse RNA-seq studies that NCBI has processed: look for **"Download RNA-seq counts"** on the study's GEO page. NCBI uses one standard pipeline, so counts can differ slightly from the original paper.
+**A. Load from GEO.** Choose **Load from GEO**, type a series number such as `GSE106305`, and click **Load from GEO**. The app downloads NCBI's raw counts for that study and builds the sample sheet from the study's sample information (for example cell line and treatment). The organism and ID type (Entrez) are set for you. The app first uses NCBI's raw counts, which exist for many human and mouse studies (the **"Download RNA-seq counts"** button on the GEO page). NCBI uses one standard pipeline, so counts can differ slightly from the original paper. If NCBI has none, for example for very new studies, the app uses the **authors' own count file** from the study's supplementary files (text or Excel). It then matches the file's sample columns to the GEO samples by name. Check the **Organism** and **ID Type** afterwards. If the authors only uploaded normalized values (FPKM, TPM), the app says so, because DESeq2 needs raw counts.
 
 **B. Upload files.**
 1. **Upload Counts File(s)**, any of:

@@ -7,7 +7,7 @@
 if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 
 install.packages(c("shiny", "dplyr", "ggplot2", "ggrepel", "forcats",
-                   "RColorBrewer", "circlize", "DT"))
+                   "RColorBrewer", "circlize", "DT", "readxl"))
 
 # DESeq2, annotation and heatmap packages, plus the human gene database.
 BiocManager::install(c("DESeq2", "AnnotationDbi", "ComplexHeatmap", "fgsea", "org.Hs.eg.db"),

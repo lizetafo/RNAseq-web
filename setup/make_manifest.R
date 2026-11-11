@@ -11,7 +11,7 @@ if (!requireNamespace("rsconnect", quietly = TRUE)) install.packages("rsconnect"
 if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
 
 # Every package the app can use must be installed here so it is recorded
-cran <- c("shiny", "dplyr", "ggplot2", "ggrepel", "forcats", "RColorBrewer", "circlize", "DT")
+cran <- c("shiny", "dplyr", "ggplot2", "ggrepel", "forcats", "RColorBrewer", "circlize", "DT", "readxl")
 bioc <- c("DESeq2", "AnnotationDbi", "ComplexHeatmap", "fgsea",
           "org.Hs.eg.db", "org.Mm.eg.db", "org.Rn.eg.db",
           "org.Dm.eg.db", "org.Dr.eg.db", "org.Sc.sgd.db")
