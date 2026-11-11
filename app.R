@@ -108,8 +108,14 @@ read_count_table<- function(path, name = basename(path)){
     utils::write.table(x, tmp, sep = "\t", quote = FALSE, row.names = FALSE, col.names = FALSE)
     path<- tmp; name<- sub("\\.xlsx?$", ".tsv", name, ignore.case = TRUE)
   }
+  #text that is not valid UTF-8 (e.g. Latin-1 characters) is converted, to avoid "invalid multibyte string" errors
+  all_lines<- readLines(path, warn = FALSE)                 #readLines also reads .gz files
+  if(!all(validUTF8(all_lines))){
+    all_lines<- iconv(all_lines, from = "latin1", to = "UTF-8", sub = "")
+    path<- tempfile(fileext = ".txt"); writeLines(all_lines, path, useBytes = TRUE)
+  }
   is_csv<- grepl("\\.csv(\\.gz)?$", name, ignore.case = TRUE)
-  lines<- readLines(path, n = 60, warn = FALSE)            #readLines also reads .gz files
+  lines<- utils::head(all_lines, 60)
   lines<- lines[nzchar(lines) & !grepl("^#", lines)]
   if(length(lines) == 0) stop(paste0("'", name, "' is empty."))
   sep<- if(is_csv) "," else "\t"
@@ -133,6 +139,9 @@ read_count_table<- function(path, name = basename(path)){
   #drop summary rows (HTSeq "__no_feature", STAR "N_unmapped", ...)
   drop<- grepl("^__", ids) | ids %in% c("N_unmapped", "N_multimapping", "N_noFeature", "N_ambiguous")
   ids<- ids[!drop]; vals<- vals[!drop, , drop = FALSE]
+  #a gene name / symbol column is kept aside (used for gene names when no gene database fits)
+  gn_col<- grep("^(gene[_. ]?name|gene[_. ]?symbol|symbol|external_gene_name|name)$", names(vals), ignore.case = TRUE, value = TRUE)
+  gene_names<- if(length(gn_col)) stats::setNames(as.character(vals[[gn_col[1]]]), ids) else NULL
   #keep numeric columns only (e.g. a gene_name column is dropped)
   num<- vapply(vals, function(v){
     x<- suppressWarnings(as.numeric(v)); all(is.na(x) == is.na(v) | v %in% c("", "NA"))
@@ -144,6 +153,7 @@ read_count_table<- function(path, name = basename(path)){
   if(!header) colnames(m)<- if(ncol(m) == 1) file_stem(name) else paste0(file_stem(name), "_", seq_len(ncol(m)))
   else colnames(m)<- clean_sample_names(colnames(m))
   if(ncol(m) == 1 && header && grepl("^V[0-9]+$|^count", colnames(m), ignore.case = TRUE)) colnames(m)<- file_stem(name)
+  attr(m, "gene_names")<- gene_names
   m
 }
 
@@ -167,12 +177,17 @@ expand_archives<- function(paths, names){
 
 #checks that values are raw counts (whole numbers >= 0) and converts them to integers
 check_count_values<- function(m, round_estimated = FALSE){
+  gene_names<- attr(m, "gene_names")
   v<- m[!is.na(m)]
   note<- NULL
   if(any(v < 0))
     stop("The count table has negative values, so it looks like log-transformed or normalized data (for example log2 CPM or microarray values). DESeq2 needs raw read counts (whole numbers, 0 or more).")
   nz<- v[v != 0]
   frac<- if(length(nz)) mean(abs(nz - round(nz)) > 1e-8) else 0
+  near<- if(length(nz)) mean(abs(nz - round(nz)) > 0.01) else 0     #e.g. 333.999 (saved with decimals)
+  if(frac > 0.01 && near < 0.01){
+    round_estimated<- TRUE
+  }
   if(frac > 0.01){
     if(!round_estimated)
       stop("The values are not whole numbers, so this looks like normalized data (FPKM, RPKM, TPM or CPM). DESeq2 needs raw read counts. Look for a 'raw counts' file, or use 'Load from GEO' (NCBI raw counts). If the values are estimated counts from RSEM or Salmon, tick 'Round estimated counts' and upload again.")
@@ -180,6 +195,7 @@ check_count_values<- function(m, round_estimated = FALSE){
   }
   m<- round(m)
   storage.mode(m)<- "integer"
+  attr(m, "gene_names")<- gene_names
   list(counts = m, note = note)
 }
 
@@ -194,8 +210,10 @@ read_counts<- function(paths, names = basename(paths), na_to_zero = FALSE, round
   }
   if(length(mats) == 0) stop("No count table could be read from the uploaded file(s).")
   if(length(failed) > 0) notes<- c(notes, paste0("Skipped files that are not count tables: ", paste(failed, collapse = ", ")))
+  gene_names<- NULL
   if(length(mats) == 1){
     counts<- mats[[1]]
+    gene_names<- attr(counts, "gene_names")
   } else {
     genes<- unique(unlist(lapply(mats, rownames)))
     counts<- do.call(cbind, lapply(mats, function(m){
@@ -228,7 +246,8 @@ read_counts<- function(paths, names = basename(paths), na_to_zero = FALSE, round
     message("Removing ", dup, " duplicated genes IDs")
     counts<- counts[!duplicated(rownames(counts)), , drop = FALSE]
   }
-  list(counts = counts, notes = notes)
+  attr(counts, "gene_names")<- NULL
+  list(counts = counts, notes = notes, gene_names = gene_names)
 }
 
 #reads a sample sheet (metadata) file
@@ -264,7 +283,7 @@ read_file<- function(cnts, met = NULL, na_to_zero = FALSE, cnts_names = basename
     if(setequal(rownames(meta), colnames(counts)) && !identical(rownames(meta), colnames(counts)))
       meta<- meta[colnames(counts), , drop = FALSE]
   }
-  invisible(list(counts = counts, metadata = meta, notes = rc$notes))
+  invisible(list(counts = counts, metadata = meta, notes = rc$notes, gene_names = rc$gene_names))
 }
 
 ########################################################################
@@ -277,16 +296,22 @@ download_geo_file<- function(url, dest){
   if(!ok || !file.exists(dest) || file.size(dest) == 0) return(FALSE)
   con<- file(dest, "rb"); magic<- readBin(con, "raw", 2); close(con)
   if(identical(magic, as.raw(c(0x1f, 0x8b)))) return(TRUE)        #gzip file
-  head<- tolower(paste(readLines(dest, n = 30, warn = FALSE), collapse = " "))
-  !grepl("<html|<!doctype|recaptcha|checking your browser", head)
+  if(identical(magic, as.raw(c(0x50, 0x4b)))) return(TRUE)        #zip / Excel file
+  con<- file(dest, "rb"); bytes<- readBin(con, "raw", 3000); close(con)
+  bytes<- bytes[bytes != as.raw(0)]
+  head<- tolower(iconv(rawToChar(bytes), from = "latin1", to = "UTF-8", sub = ""))
+  !grepl("<html|<!doctype|recaptcha|checking your browser", head, useBytes = TRUE)
 }
 
 #parses the sample information from GEO Series Matrix file(s) into a sample sheet
 #attributes: "ids" (names each sample may have in count files) and "organism"
 parse_series_matrix<- function(paths){
-  rows<- list(); ids<- list(); orgs<- character(0)
+  rows<- list(); ids<- list(); orgs<- character(0); strategy<- character(0); series_type<- character(0)
   for(p in paths){
     ln<- readLines(p, warn = FALSE)
+    if(!all(validUTF8(ln))) ln<- iconv(ln, from = "latin1", to = "UTF-8", sub = "")
+    st<- ln[grepl("^!Series_type", ln)]
+    if(length(st)) series_type<- c(series_type, gsub('"', "", sub("^!Series_type\t", "", st)))
     ln<- ln[grepl("^!Sample_", ln)]
     sp<- lapply(strsplit(ln, "\t", fixed = TRUE), function(x) gsub('^"|"$', "", x))
     key<- vapply(sp, `[`, character(1), 1)
@@ -308,6 +333,8 @@ parse_series_matrix<- function(paths){
     src<- get1("!Sample_source_name_ch1"); if(!is.null(src)) df[["source"]]<- trimws(src)
     tit<- get1("!Sample_title"); if(!is.null(tit)) df[["title"]]<- trimws(tit)
     org<- get1("!Sample_organism_ch1"); if(!is.null(org)) orgs<- c(orgs, org)
+    ls<- get1("!Sample_library_strategy")
+    strategy<- c(strategy, stats::setNames(if(is.null(ls)) rep(NA_character_, length(gsm)) else ls, gsm))
     #other names of each sample (title, library names, descriptions) to match count-file columns
     extra<- c(list(tit), lapply(sp[key %in% c("!Sample_description", "!Sample_library_name")], `[`, -1))
     for(j in seq_along(gsm)){
@@ -330,6 +357,8 @@ parse_series_matrix<- function(paths){
   meta[is.na(meta)]<- ""
   attr(meta, "ids")<- ids
   attr(meta, "organism")<- if(length(orgs)) names(sort(table(orgs), decreasing = TRUE))[1] else NA_character_
+  attr(meta, "strategy")<- strategy
+  attr(meta, "series_type")<- unique(series_type)
   meta
 }
 
@@ -364,14 +393,23 @@ organism_choice<- function(org){
 }
 
 #lists file names in a GEO folder (Series Matrix or supplementary files)
+#attribute "size_mb": approximate file sizes in MB (from the folder listing)
 list_geo_dir<- function(url){
   idx<- tempfile(fileext = ".html")
   ok<- tryCatch({ utils::download.file(url, idx, mode = "wb", quiet = TRUE); TRUE }, error = function(e) FALSE, warning = function(w) FALSE)
   if(!ok || !file.exists(idx)) return(character(0))
-  html<- paste(readLines(idx, warn = FALSE), collapse = " ")
-  f<- regmatches(html, gregexpr('href="[^"/?][^"]*"', html))[[1]]
-  f<- utils::URLdecode(gsub('^href="|"$', "", f))
-  unique(basename(f[grepl("^GSE", basename(f))]))
+  html<- readLines(idx, warn = FALSE)
+  if(!all(validUTF8(html))) html<- iconv(html, from = "latin1", to = "UTF-8", sub = "")
+  html<- paste(html, collapse = "\n")
+  m<- regmatches(html, gregexpr('href="[^"/?][^"]*">[^<]*</a>[^<\n]*', html))[[1]]
+  f<- utils::URLdecode(sub('^href="([^"]*)".*$', "\\1", m))
+  to_mb<- function(x){ if(!length(x) || !nzchar(x)) return(NA_real_); u<- sub("^[0-9.]+", "", trimws(x)); v<- as.numeric(sub("[KMG]$", "", trimws(x)))
+                       v * switch(u, K = 1/1024, M = 1, G = 1024, 1/1024^2) }
+  sizes<- vapply(seq_along(m), function(i){ x<- sub("^.*</a>\\s*", "", m[i]); y<- regmatches(x, regexpr("[0-9.]+[KMG]?\\s*$", x)); to_mb(y) }, numeric(1))
+  keep<- grepl("^GSE", basename(f)) & !duplicated(basename(f))
+  out<- basename(f[keep])
+  attr(out, "size_mb")<- stats::setNames(sizes[keep], out)
+  out
 }
 
 #downloads raw counts and sample information for a GEO series (GSE)
@@ -394,6 +432,26 @@ load_geo<- function(gse,
     }
   }
   meta<- if(length(sm_files) > 0) parse_series_matrix(sm_files) else NULL
+  data_type<- "rna"
+  if(!is.null(meta)){
+    strat<- attr(meta, "strategy")
+    is_seq<- grepl("-Seq$|^OTHER$", strat, ignore.case = TRUE)
+    if(!any(is_seq) && any(grepl("by array", attr(meta, "series_type"), ignore.case = TRUE)) &&
+       !any(grepl("high throughput sequencing", attr(meta, "series_type"), ignore.case = TRUE)))
+      stop(paste0(gse, " is a microarray study (", paste(attr(meta, "series_type"), collapse = "; "),
+                  "). This app analyzes RNA-seq read counts with DESeq2, which does not apply to microarray data."))
+    if(any(is_seq) && !all(is_seq | is.na(strat))){
+      keep_gsm<- names(strat)[is_seq]
+      notes<- c(notes, paste0(sum(!is_seq), " sample(s) that are not RNA-seq (for example ChIP-seq or microarray) were left out."))
+      at<- attributes(meta)[c("ids", "organism", "strategy", "series_type")]
+      meta<- meta[rownames(meta) %in% keep_gsm, , drop = FALSE]
+      for(a in names(at)) attr(meta, a)<- at[[a]]
+    }
+    if(any(is_seq) && all(grepl("miRNA", strat[is_seq], ignore.case = TRUE))){
+      data_type<- "mirna"
+      notes<- c(notes, "This is microRNA sequencing: the IDs are microRNA names, so gene-name lookup and the Hallmark pathway analysis do not apply.")
+    }
+  }
   
   #2a. NCBI-generated raw counts (human, then mouse)
   builds<- c(human = "GRCh38.p13", mouse = "GRCm39")
@@ -410,7 +468,7 @@ load_geo<- function(gse,
   }
   
   #2b. otherwise: the authors' supplementary count file(s)
-  tried<- character(0); normalized<- character(0)
+  tried<- character(0); normalized<- character(0); gene_names<- NULL; sup<- character(0)
   if(is.null(counts)){
     sup<- list_geo_dir(paste0(sdir, "suppl/"))
     table_ext<- "\\.(txt|tsv|csv|tab|xlsx|xls)(\\.gz)?$"
@@ -424,12 +482,36 @@ load_geo<- function(gse,
       tried<- c(tried, x)
       m<- tryCatch(read_count_table(d, x), error = function(e) NULL)
       if(is.null(m) || ncol(m) < 2) next
-      chk<- tryCatch(check_count_values(m), error = function(e) NULL)
+      #Salmon / RSEM estimated counts have decimals but are counts: they are rounded
+      estimated<- grepl("salmon|rsem|expected|numreads|gene_counts|est_counts", x, ignore.case = TRUE) &&
+                  !grepl("tpm|fpkm|rpkm|cpm|normali", x, ignore.case = TRUE)
+      chk<- tryCatch(check_count_values(m, round_estimated = estimated), error = function(e) NULL)
       if(is.null(chk)){ normalized<- c(normalized, x); next }
       counts<- chk$counts; source<- x; id_type<- guess_id_type(rownames(counts))
+      gene_names<- attr(counts, "gene_names"); attr(counts, "gene_names")<- NULL
+      if(!is.null(chk$note)) notes<- c(notes, chk$note)
       break
     }
     organism<- if(!is.null(meta)) organism_choice(attr(meta, "organism")) else NA_character_
+  }
+  
+  #2c. otherwise: per-sample count files inside the study's _RAW.tar (if not too large)
+  raw_tar<- grep("_RAW\\.tar$", sup, value = TRUE)
+  if(is.null(counts) && length(raw_tar) == 1){
+    mb<- attr(sup, "size_mb")[[raw_tar]]
+    if(!is.na(mb) && mb <= 300){
+      d<- file.path(tempdir(), raw_tar)
+      if(download_geo_file(paste0(sdir, "suppl/", raw_tar), d)){
+        rc<- tryCatch(read_counts(d, raw_tar, na_to_zero = TRUE), error = function(e) e)
+        if(!inherits(rc, "error")){
+          counts<- rc$counts; source<- raw_tar; id_type<- guess_id_type(rownames(counts))
+          gene_names<- rc$gene_names
+        } else if(grepl("not whole numbers|negative", conditionMessage(rc))) normalized<- c(normalized, raw_tar)
+        else tried<- c(tried, raw_tar)
+      }
+    } else if(!is.na(mb)) {
+      tried<- c(tried, paste0(raw_tar, " (", round(mb), " MB, too large to download here)"))
+    }
   }
   
   if(is.null(counts)){
@@ -446,15 +528,16 @@ load_geo<- function(gse,
     if(!all(colnames(counts) %in% rownames(meta))){
       #the authors' columns use their own sample names: match them to GEO samples
       gsm<- match_samples_to_geo(colnames(counts), ids)
-      if(!anyNA(gsm) && !anyDuplicated(gsm)){
-        colnames(counts)<- gsm
-        notes<- c(notes, "Matched the count-file columns to the GEO samples by sample name.")
+      ok<- !is.na(gsm) & !duplicated(gsm) & !gsm %in% gsm[duplicated(gsm)]
+      if(sum(ok) >= 2){
+        new<- colnames(counts); new[ok]<- gsm[ok]; colnames(counts)<- make.unique(new)
+        notes<- c(notes, paste0("Matched ", sum(ok), " of ", length(ok), " count-file columns to the GEO samples by sample name."))
       }
     }
     both<- rownames(meta)[rownames(meta) %in% colnames(counts)]   #GEO sample order
     if(length(both) >= 2){
-      if(length(both) < ncol(counts)) notes<- c(notes, paste0(ncol(counts) - length(both), " samples without sample information were left out."))
-      if(length(both) < nrow(meta)) notes<- c(notes, paste0(nrow(meta) - length(both), " samples in the series have no counts in this file (for example non-RNA-seq samples) and were left out."))
+      if(length(both) < ncol(counts)) notes<- c(notes, paste0(ncol(counts) - length(both), " sample(s) without sample information were left out."))
+      if(length(both) < nrow(meta)) notes<- c(notes, paste0(nrow(meta) - length(both), " sample(s) in the series have no counts in this file (for example non-RNA-seq samples) and were left out."))
       counts<- counts[, both, drop = FALSE]; meta<- meta[both, , drop = FALSE]
     } else {
       #could not match: keep the count columns and let the user fill in the groups
@@ -474,8 +557,11 @@ load_geo<- function(gse,
     notes<- c(notes, paste0("NCBI raw counts are not available for ", gse, ", so the authors' count file was used: ", source,
                             " (", ncol(counts), " samples). Check the organism and ID type settings."))
   }
-  list(counts = counts, metadata = meta, organism = organism, id_type = id_type, notes = notes, gse = gse)
+  attr(meta, "strategy")<- NULL; attr(meta, "series_type")<- NULL
+  list(counts = counts, metadata = meta, organism = organism, id_type = id_type, notes = notes, gse = gse,
+       gene_names = gene_names, data_type = data_type)
 }
+
 
 
 ########################################################################
@@ -635,6 +721,48 @@ annotate_results<- function(res, orgdb, id_type=NULL,
   attr(resdf, "id_type_used")<- id_type
   resdf
 }
+
+#adds gene names, trying the chosen ID type first and the other ID types if few IDs match;
+#falls back to a gene-name column from the count file, or to the IDs themselves (e.g. microRNAs)
+annotate_flexible<- function(res, orgdb = NULL, id_type = NULL, gene_names = NULL){
+  resdf<- as.data.frame(res)
+  ids<- rownames(resdf)
+  keys<- sub("^(ENS[A-Z]*G[0-9]+)\\.[0-9]+$", "\\1", ids)     #ENSG00000141510.17 -> ENSG00000141510
+  note<- NULL; best<- NULL; used<- NULL
+  rate<- function(x) if(is.null(x)) 0 else mean(!is.na(x))
+  if(!is.null(orgdb)){
+    try_type<- function(kt) tryCatch(suppressMessages(
+      AnnotationDbi::mapIds(orgdb, keys = keys, keytype = kt, column = "SYMBOL", multiVals = "first")),
+      error = function(e) NULL)
+    kts<- intersect(unique(c(id_type, "ENSEMBL", "ENTREZID", "SYMBOL")), AnnotationDbi::keytypes(orgdb))
+    first<- if(!is.null(id_type) && id_type %in% kts) try_type(id_type) else NULL
+    if(rate(first) >= 0.2){
+      best<- first; used<- id_type
+    } else {
+      for(kt in setdiff(kts, id_type)){
+        x<- try_type(kt)
+        if(rate(x) >= 0.2 && rate(x) > rate(best)){ best<- x; used<- kt }
+      }
+      if(!is.null(best)) note<- paste0("The gene IDs look like ", used, " IDs (not ", id_type, "), so ", used, " was used to add gene names.")
+      else if(rate(first) > 0){ best<- first; used<- id_type }
+    }
+  }
+  if(!is.null(best)){
+    best<- unname(best)
+    if(!is.null(gene_names)){ miss<- is.na(best); best[miss]<- unname(gene_names[ids[miss]]) }
+  } else if(!is.null(gene_names)){
+    best<- unname(gene_names[ids])
+    note<- "Gene names were taken from the count file (no gene database matched these IDs)."
+  } else {
+    best<- ids
+    note<- "Gene names could not be looked up for these IDs (for example microRNAs, or a species without a gene database), so the IDs are shown as names."
+  }
+  resdf$GeneName<- best
+  attr(resdf, "id_type_used")<- used
+  attr(resdf, "note")<- note
+  resdf
+}
+
 
 #######################################################################
 ######################Function to get top genes#######################
@@ -1077,6 +1205,18 @@ subset_samples<- function(counts, meta, col=NULL, values=NULL){
   list(counts= counts[, keep, drop=FALSE], meta= meta[keep, , drop=FALSE])
 }
 
+#keeps only samples that pass every filter; filters = list(column = values to keep)
+subset_samples_multi<- function(counts, meta, filters = list()){
+  keep<- rep(TRUE, nrow(meta))
+  for(col in names(filters)){
+    vals<- filters[[col]]
+    if(!col %in% names(meta) || length(vals) == 0) next
+    keep<- keep & as.character(meta[[col]]) %in% vals
+  }
+  if(sum(keep) < 2) stop("Fewer than 2 samples are left after filtering. Keep more groups.")
+  list(counts= counts[, keep, drop=FALSE], meta= meta[keep, , drop=FALSE])
+}
+
 #removes design terms that have a single value left (e.g. CellLine after keeping only PC3)
 drop_single_level_terms<- function(design, meta){
   vars<- all.vars(design)
@@ -1135,6 +1275,9 @@ run_gsea<- function(resdf, sets, symbol_col="GeneName", stat_col="stat", upperca
   keep<- !duplicated(sym)
   ranks<- stats::setNames(st[keep], sym[keep])
   ranks<- sort(ranks, decreasing=TRUE)
+  n_in_sets<- sum(names(ranks) %in% unlist(sets))
+  if(n_in_sets < 500) stop(paste0("Only ", n_in_sets, " genes match the Hallmark gene sets, which is too few for pathway analysis. ",
+                                  "This happens with microRNA data, non-standard gene IDs, or species whose gene names differ from human."))
   set.seed(seed)
   res<- suppressWarnings(fgsea::fgsea(pathways=sets, stats=ranks, minSize=min_size, maxSize=max_size))
   res<- res[order(res$pval), ]
@@ -1263,12 +1406,10 @@ ui<- fluidPage(
       helpText("Choose appropriate ID Type for gene names annotation (example: ENSEMBL)."),
       
       #optional: analyze only some samples (e.g. one cell line)
-      selectInput("subset_col", "Analyze a subset of samples (optional)", choices = c("All samples" = "")),
-      conditionalPanel(
-        condition = "input.subset_col != ''",
-        selectizeInput("subset_vals", "Keep samples where this column is:", choices = NULL, multiple = TRUE)
-      ),
-      helpText("Example: choose CellLine, then PC3, to analyze one cell line on its own."),
+      selectizeInput("subset_cols", "Analyze a subset of samples (optional): filter by column(s)",
+                     choices = NULL, multiple = TRUE, options = list(placeholder = "All samples")),
+      uiOutput("subset_filters"),
+      helpText("Example: choose cell_line and keep PC3; add a second column, e.g. protocol, to narrow further. Only samples that pass every filter are analyzed."),
       
       #text input to enter experiment design types and conditions
       textInput(inputId = "Exp_groups", "Experimental Grouping Factor(s)"),
@@ -1278,6 +1419,7 @@ ui<- fluidPage(
       helpText("Enter reference column name from metadata (example: Activation)"),
       selectInput(inputId = "ref_levels", "Reference level (control group)", choices = NULL),
       helpText("Choose the control group that fold changes are compared against (example: Resting)"),
+      uiOutput("other_refs"),
       
       textInput(inputId = "Exp_design", "Experimental Design Formula"),
       helpText("Enter experiment design formula to be used for DESeq2 (example ~Activation)"),
@@ -1334,7 +1476,10 @@ ui<- fluidPage(
                      column(4, textInput("new_col", NULL, placeholder = "New column name, e.g. Condition")),
                      column(8, actionButton("add_col", "Add column"),
                             actionButton("apply_meta", "Use this sample sheet", class = "btn-primary"),
-                            downloadButton("download_meta", "Download sample sheet")))),
+                            downloadButton("download_meta", "Download sample sheet"))),
+                   fluidRow(column(6, fileInput("meta_upload", "Or upload an edited sample sheet (CSV, TSV or Excel)",
+                                                accept = c(".csv", ".tsv", ".txt", ".xlsx", ".xls"))),
+                            column(6, helpText(br(), "Tip: download the sample sheet, add or edit columns in Excel, save, and upload it here. The first column must be the sample names shown in the table.")))),
                  DT::DTOutput("meta_table")
         ),
         #Quality-control tab
@@ -1495,6 +1640,7 @@ server<- function(input, output, session){
   #sample sheet being edited in the Sample Sheet tab (meta_ver changes force a redraw)
   meta_draft<- reactiveVal(NULL)
   meta_ver<- reactiveVal(0)
+  data_ver<- reactiveVal(0)    #changes whenever new data are loaded (old results are then hidden)
   set_draft<- function(m){ meta_draft(m); meta_ver(isolate(meta_ver()) + 1) }
   
   #turns an analysis error into a readable message in the app
@@ -1513,9 +1659,20 @@ server<- function(input, output, session){
   report_error<- function(e) showNotification(conditionMessage(e), type = "error", duration = NULL)
   
   #stores the data and pre-fills the design settings (used by Upload, GEO, the example button and the sample sheet)
+  #removes the previous dataset (used when loading fails, so old data are not shown)
+  clear_data<- function(){
+    data_store$dat<- NULL
+    set_draft(NULL)
+    data_ver(isolate(data_ver()) + 1)
+    for(id in c("Exp_groups", "ref_col", "Exp_design", "contrast")) updateTextInput(session, id, value = "")
+    updateSelectInput(session, "ref_levels", choices = c("-- choose control group --" = ""), selected = "")
+    updateSelectizeInput(session, "subset_cols", choices = character(0), selected = character(0))
+  }
+  
   setup_design<- function(dat, update_draft = TRUE){
     #uploaded data are stored in the reactive container initially created to be unsed in pipeline
     data_store$dat<- dat
+    data_ver(isolate(data_ver()) + 1)
     if(update_draft) set_draft(dat$metadata)
     if(length(dat$notes) > 0) showNotification(paste(dat$notes, collapse = " "), type = "message", duration = 15)
     
@@ -1537,8 +1694,7 @@ server<- function(input, output, session){
         }
       }
       
-      updateSelectInput(session, "subset_col", choices = c("All samples" = "", names(meta)), selected = "")
-      updateSelectizeInput(session, "subset_vals", choices = character(0), selected = character(0))
+      updateSelectizeInput(session, "subset_cols", choices = names(meta), selected = character(0))
       
       if (is.null(candidate)){
         #no usable grouping yet: send the user to the sample sheet
@@ -1582,7 +1738,7 @@ server<- function(input, output, session){
       #basic quality checks
       qc_check(dat$counts, dat$metadata)
       setup_design(dat)
-    }, error = report_error)
+    }, error = function(e){ clear_data(); report_error(e) })
   })
 
   #loads the bundled example dataset (prostate cancer cells, hypoxia vs normoxia; GEO GSE106305)
@@ -1610,9 +1766,10 @@ server<- function(input, output, session){
       })
       if(!is.na(g$organism)) updateSelectInput(session, "Orgdb", selected = g$organism)
       updateSelectInput(session, "idtype", selected = g$id_type)
-      setup_design(list(counts = g$counts, metadata = g$metadata, notes = g$notes))
+      setup_design(list(counts = g$counts, metadata = g$metadata, notes = g$notes,
+                        gene_names = g$gene_names, data_type = g$data_type))
       updateTabsetPanel(session, "main_tabs", selected = "Sample Sheet")
-    }, error = report_error)
+    }, error = function(e){ clear_data(); report_error(e) })
   })
   
   #### SAMPLE SHEET EDITOR
@@ -1664,6 +1821,48 @@ server<- function(input, output, session){
     }, error = report_error)
   })
   
+  #uploads an edited sample sheet (any data source); first column = sample names
+  observeEvent(input$meta_upload, {
+    req(data_store$dat)
+    tryCatch({
+      f<- input$meta_upload
+      if(grepl("\\.xlsx?$", f$name, ignore.case = TRUE)){
+        up<- as.data.frame(readxl::read_excel(f$datapath, sheet = 1, col_types = "text"), check.names = FALSE)
+        up[[1]]<- trimws(as.character(up[[1]]))
+        rownames(up)<- make.unique(up[[1]]); up<- up[, -1, drop = FALSE]
+        up[]<- lapply(up, function(x) ifelse(is.na(x), "", trimws(as.character(x))))
+      } else {
+        up<- read_meta(f$datapath)
+        up[]<- lapply(up, function(x) ifelse(is.na(x), "", as.character(x)))
+      }
+      validate(need(ncol(up) >= 1, "The sample sheet needs at least one column besides the sample names."))
+      #column names that work in a design formula
+      nm<- gsub("^_|_$", "", gsub("[^A-Za-z0-9]+", "_", names(up)))
+      nm<- ifelse(grepl("^[0-9]", nm) | !nzchar(nm), paste0("X", nm), nm)
+      names(up)<- make.unique(nm, sep = "_")
+      dat<- data_store$dat
+      cn<- colnames(dat$counts)
+      ids<- rownames(up)
+      #sample names may also be given as another column of the current sheet (e.g. the title)
+      if(!all(ids %in% cn)){
+        cur<- dat$metadata
+        for(col in names(cur)){
+          v<- as.character(cur[[col]])
+          if(!anyDuplicated(v) && all(ids %in% v)){ rownames(up)<- rownames(cur)[match(ids, v)]; ids<- rownames(up); break }
+        }
+      }
+      hit<- ids[ids %in% cn]
+      validate(need(length(hit) >= 2, "The sample names in the first column do not match the samples in the data. Download the sample sheet to see the expected names."))
+      notes<- character(0)
+      if(length(hit) < length(cn)) notes<- c(notes, paste0(length(cn) - length(hit), " sample(s) not in the uploaded sample sheet were left out."))
+      dat$counts<- dat$counts[, hit, drop = FALSE]
+      dat$metadata<- up[hit, , drop = FALSE]
+      dat$notes<- c(notes, "Using the uploaded sample sheet.")
+      qc_check(dat$counts, dat$metadata)
+      setup_design(dat)
+    }, error = report_error)
+  })
+  
   output$download_meta<- downloadHandler(
     filename = function() "sample_sheet.csv",
     content = function(file){
@@ -1672,25 +1871,40 @@ server<- function(input, output, session){
     }
   )
 
-  #when a subset column is chosen, offer its values
-  observeEvent(input$subset_col, {
+  #### SAMPLE FILTERS (subset of samples, by one or more columns)
+  filter_id<- function(col) paste0("flt_", make.names(col))
+  
+  #list(column = values to keep) from the filter boxes (reactive: re-runs when filters change)
+  current_filters<- function(){
+    cols<- input$subset_cols
+    if(is.null(data_store$dat) || length(cols) == 0) return(list())
+    out<- list()
+    for(col in cols){
+      v<- input[[filter_id(col)]]
+      if(!is.null(v)) out[[col]]<- v
+    }
+    out
+  }
+  
+  #one box per chosen column, listing its values (all kept at first)
+  output$subset_filters<- renderUI({
     req(data_store$dat)
     meta<- data_store$dat$metadata
-    if(nzchar(input$subset_col) && input$subset_col %in% names(meta)){
-      v<- sort(unique(as.character(meta[[input$subset_col]])))
-      updateSelectizeInput(session, "subset_vals", choices = v, selected = v)
-    } else {
-      updateSelectizeInput(session, "subset_vals", choices = character(0), selected = character(0))
-    }
-  }, ignoreInit = TRUE)
-
-  #when the reference column changes, offer its groups as control-group choices
-  #metadata of the samples that will be analyzed (after the optional subset)
-  meta_in_use<- function(){
+    cols<- intersect(input$subset_cols, names(meta))
+    if(length(cols) == 0) return(NULL)
+    lapply(cols, function(col){
+      v<- sort(unique(as.character(meta[[col]])))
+      old<- isolate(input[[filter_id(col)]])
+      sel<- if(!is.null(old) && all(old %in% v)) old else v
+      selectizeInput(filter_id(col), paste0("Keep samples where ", col, " is:"), choices = v, selected = sel, multiple = TRUE)
+    })
+  })
+  
+  #metadata of the samples that will be analyzed (after the optional filters)
+  meta_in_use<- function(reactive_filters = FALSE){
     meta<- data_store$dat$metadata
-    sc<- isolate(input$subset_col); sv<- isolate(input$subset_vals)
-    if(!is.null(sc) && nzchar(sc) && sc %in% names(meta) && length(sv) > 0)
-      meta<- meta[as.character(meta[[sc]]) %in% sv, , drop = FALSE]
+    f<- if(reactive_filters) current_filters() else isolate(current_filters())
+    if(length(f)) meta<- tryCatch(subset_samples_multi(matrix(0, 0, nrow(meta)), meta, f)$meta, error = function(e) meta[0, , drop = FALSE])
     meta
   }
   
@@ -1720,7 +1934,11 @@ server<- function(input, output, session){
   
   #when the reference column or the sample subset changes, update the control-group choices and the contrast
   observeEvent(input$ref_col, refresh_ref_choices(), ignoreInit = TRUE)
-  observeEvent(input$subset_vals, refresh_ref_choices(), ignoreInit = TRUE, ignoreNULL = FALSE)
+  observe({
+    req(data_store$dat)
+    current_filters()                 #re-run when any filter changes
+    isolate(refresh_ref_choices())
+  })
 
   #when a control group is chosen, fill in the contrast (case vs control)
   observeEvent(input$ref_levels, {
@@ -1729,11 +1947,37 @@ server<- function(input, output, session){
   }, ignoreInit = TRUE)
    
   
+  #grouping factors other than the reference column: each gets its own baseline (reference) group
+  other_factors<- reactive({
+    f<- trimws(strsplit(input$Exp_groups, ",")[[1]]); f<- f[nzchar(f)]
+    setdiff(f, trimws(input$ref_col))
+  })
+  output$other_refs<- renderUI({
+    req(data_store$dat)
+    fs<- other_factors()
+    meta<- meta_in_use(reactive_filters = TRUE)
+    fs<- intersect(fs, names(meta))
+    if(length(fs) == 0) return(NULL)
+    tagList(
+      lapply(fs, function(f){
+        lv<- sort(unique(as.character(meta[[f]])))
+        id<- paste0("ref_other_", make.names(f))
+        old<- isolate(input[[id]])
+        selectInput(id, paste0("Reference level for ", f), choices = lv, selected = if(isTRUE(old %in% lv)) old else lv[1])
+      }),
+      helpText("Baseline group for each other factor in the design. It matters mainly for interaction terms (Result to show).")
+    )
+  })
+  
   ###building ref levels from UI
   ref_levels<- reactive({
     ref_list<- list()
     if(nzchar(input$ref_col)&&nzchar(input$ref_levels)){
       ref_list[[input$ref_col]] <- input$ref_levels
+    }
+    for(f in other_factors()){
+      v<- input[[paste0("ref_other_", make.names(f))]]
+      if(!is.null(v) && nzchar(v)) ref_list[[f]]<- v
     }
     ref_list
   })
@@ -1809,10 +2053,12 @@ server<- function(input, output, session){
     notes<- as.character(dat$notes)
     
     #optional: keep only some samples (e.g. one cell line)
-    sub<- subset_samples(dat$counts, dat$metadata, col= input$subset_col, values= input$subset_vals)
+    flt<- current_filters()
+    sub<- subset_samples_multi(dat$counts, dat$metadata, flt)
     if(ncol(sub$counts) < ncol(dat$counts))
       notes<- c(notes, paste0("Analyzing ", ncol(sub$counts), " of ", ncol(dat$counts), " samples (",
-                              input$subset_col, ": ", paste(input$subset_vals, collapse=", "), ")."))
+                              paste(vapply(names(flt), function(c) paste0(c, ": ", paste(flt[[c]], collapse = ", ")), character(1)), collapse = "; "),
+                              ")."))
     dat_use<- list(counts= sub$counts, metadata= sub$meta)
     
     #Prepare experiemtnal groping vector 
@@ -1874,7 +2120,9 @@ server<- function(input, output, session){
     
     list(dat=dat_use, meta=meta, dseq=dseq, vsd=vsd, notes=notes,
          contrast=contrast_vec, alpha=input$alpha, shrink=isTRUE(input$shrink), n=input$n,
-         db=orgdb(), id=id_type(), org=input$Orgdb)
+         db= if(input$Orgdb == "other" && !nzchar(trimws(input$OtherOrg))) NULL else orgdb(),
+         id=id_type(), org=input$Orgdb, gene_names= dat$gene_names, data_type= dat$data_type,
+         ver= isolate(data_ver()))
   })})
   
   #after a run: list every DESeq2 coefficient so advanced users can pick one (e.g. an interaction)
@@ -1889,6 +2137,7 @@ server<- function(input, output, session){
   ##results for the chosen comparison (changing 'Result to show' does not re-run DESeq2)
   pipeline<- reactive({ show_errors({
     cr<- core()
+    validate(need(identical(cr$ver, data_ver()), "New data were loaded. Check the settings, then click Run."))
     choice<- input$result_choice
     use_name<- !is.null(choice) && nzchar(choice) && choice != "contrast" && choice %in% DESeq2::resultsNames(cr$dseq)
     notes<- cr$notes
@@ -1908,7 +2157,8 @@ server<- function(input, output, session){
     }
     
     ##annoate gene names
-    ann<- annotate_results(res_list$count_results, orgdb = cr$db, id_type = cr$id, to_symbol = "SYMBOL")
+    ann<- annotate_flexible(res_list$count_results, orgdb = cr$db, id_type = cr$id, gene_names = cr$gene_names)
+    if(!is.null(attr(ann, "note"))) notes<- c(notes, attr(ann, "note"))
     
     ##top genese
     top__genes<- top_genes(ann, padj= "padj", n= cr$n)
@@ -1921,7 +2171,8 @@ server<- function(input, output, session){
          ann= ann,
          top__genes= top__genes,
          notes= notes,
-         org= cr$org)
+         org= cr$org,
+         data_type= cr$data_type)
   })})
   
   #notes shown above the tabs (subset used, low replication, shrinkage, ...)
@@ -2138,16 +2389,18 @@ server<- function(input, output, session){
   #annotated results preview
   
   #### PATHWAY ANALYSIS (GSEA)
-  gsea_obj<- reactive({
+  gsea_obj<- reactive({ show_errors({
     p<- pipeline()
     validate(need(requireNamespace("fgsea", quietly=TRUE),
                   "Pathway analysis needs the 'fgsea' package (run setup/install_packages.R)."))
-    validate(need(p$org %in% c("human", "mouse", "rat"),
-                  "Pathway analysis is available for human, mouse and rat data."))
+    validate(need(!identical(p$data_type, "mirna"),
+                  "Pathway analysis uses gene sets, so it does not apply to microRNA data."))
+    validate(need(p$org %in% c("human", "mouse", "rat", "other"),
+                  "Pathway analysis is available for human, mouse and rat data (and other species with human-like gene names)."))
     validate(need("stat" %in% names(p$ann), "No test statistic available for ranking genes."))
     withProgress(message="Running pathway analysis (GSEA)...", {
       run_gsea(p$ann, load_gene_sets(), uppercase = p$org != "human")
-    })
+    })})
   })
   
   observeEvent(safe_value(gsea_obj()), {
@@ -2158,8 +2411,8 @@ server<- function(input, output, session){
   output$gsea_note<- renderUI({
     req(input$run > 0)
     org<- pipeline()$org
-    if(org %in% c("mouse", "rat"))
-      helpText("Mouse and rat genes are matched to the human Hallmark sets by gene symbol (approximate).")
+    if(org %in% c("mouse", "rat", "other"))
+      helpText("Non-human genes are matched to the human Hallmark sets by gene symbol (approximate).")
   })
   
   output$gsea_bar<- renderPlot({

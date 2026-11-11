@@ -22,6 +22,15 @@ There are three ways to get data in. Choose **Data source** at the top of the si
 
 **A. Load from GEO.** Choose **Load from GEO**, type a series number such as `GSE106305`, and click **Load from GEO**. The app downloads NCBI's raw counts for that study and builds the sample sheet from the study's sample information (for example cell line and treatment). The organism and ID type (Entrez) are set for you. The app first uses NCBI's raw counts, which exist for many human and mouse studies (the **"Download RNA-seq counts"** button on the GEO page). NCBI uses one standard pipeline, so counts can differ slightly from the original paper. If NCBI has none, for example for very new studies, the app uses the **authors' own count file** from the study's supplementary files (text or Excel). It then matches the file's sample columns to the GEO samples by name. Check the **Organism** and **ID Type** afterwards. If the authors only uploaded normalized values (FPKM, TPM), the app says so, because DESeq2 needs raw counts.
 
+What else the GEO loader handles:
+- **Salmon / RSEM estimated counts** (numbers like `333.999`) are rounded and used.
+- **Per-sample count files inside the study's `_RAW.tar`** are used if the archive is under 300 MB.
+- **Microarray studies** are recognized and refused with an explanation. DESeq2 is for sequencing counts.
+- **microRNA-seq studies** load and run, but gene-name lookup and pathway analysis don't apply. The app shows the microRNA names instead.
+- **Other species** (for example rhesus macaque): gene names come from the count file if it has a gene-name column.
+- **Samples that aren't RNA-seq** in the same series (for example ChIP-seq) are left out.
+- **If loading fails**, the previous study is cleared from the screen so it isn't mistaken for the new one.
+
 **B. Upload files.**
 1. **Upload Counts File(s)**, any of:
    - one count table (genes × samples)
@@ -51,6 +60,8 @@ It then detects the grouping column (the first column with 2–10 groups and rep
 
 If no usable grouping is found (for example when you upload counts only), the app opens this tab and asks you to fill it in.
 
+**Editing in Excel instead:** click **Download sample sheet**, add or change columns in Excel, save, and upload it with **Or upload an edited sample sheet**. This works with every data source, including GEO. The first column must keep the sample names; GEO titles are also recognized. Samples you delete from the sheet are left out of the analysis.
+
 ![Sample sheet](screenshots/11_sample_sheet.png)
 
 5. **Choose the control group** in **Reference level (control group)**. The app does not guess it. The **contrast** then fills in automatically (case first, control last). Check the other settings:
@@ -73,7 +84,9 @@ With contrast `Condition, Hypoxia, Normoxia`, a **positive log2 fold change mean
 - **Number of top genes**: how many genes to label and show in the heatmap and bar plot.
 - **Shrink log2 fold changes** (optional): makes fold changes of low-count genes more reliable, so noisy genes don't top the bar plot. P-values do not change. It is not available for designs with interaction terms.
 
-**Analyze a subset of samples (optional).** Choose a metadata column, for example `CellLine`, then keep only the values you want, for example `PC3`. Design factors with a single value left are removed from the design automatically, and the app tells you.
+**Analyze a subset of samples (optional).** This is a filter on which samples enter the analysis. Choose one or more columns, and a box appears for each, where you keep only the values you want. For example, choose `cell_line` and keep `PC3`, then also choose `treatment` and keep `Hypoxia` and `Normoxia`. Only samples that pass **every** filter are analyzed. Design factors with a single value left are removed from the design automatically, and the app tells you.
+
+**Reference level for other factors.** When you use more than one grouping factor (for example `cell_line, treatment`), a box appears for each extra factor to choose its baseline group. This matters mostly for interaction designs, where it decides how the coefficients in **Result to show** are defined.
 
 6. Click **Run**. If no control group is chosen, the app asks for one. DESeq2 usually takes from a few seconds to about a minute.
 
@@ -170,3 +183,19 @@ Column meanings are in [outputs.md](outputs.md).
 | Package installation fails on first run | Run `setup/install_packages.R` first, then restart R. |
 | *Please choose the reference (control) group* | Pick the control group in the **Reference level** dropdown, then click Run. |
 | A message says an organism database is installing | One-time download the first time you use that organism. Wait for it to finish. |
+
+---
+
+## Worked example: GSE106305 (ONECUT2 in prostate cancer)
+
+The study's RNA-seq figures can be explored like this:
+1. **Load from GEO** → `GSE106305`.
+2. In the sample sheet, add a column `group` that puts the two ONECUT2 knockdowns together: `siCtrl_Normoxia`, `siOC2_Normoxia`, `siCtrl_Hypoxia`, `siOC2_Hypoxia`, and `LNCaP` for the LNCaP samples. Either edit it in the app or download, edit in Excel and upload.
+3. Then:
+
+| Question (figure) | Filter: keep `group` = | Control group | Contrast |
+|---|---|---|---|
+| Knockdown effect under hypoxia (panel b of the hypoxia figure) | siCtrl_Hypoxia, siOC2_Hypoxia | siCtrl_Hypoxia | `group, siOC2_Hypoxia, siCtrl_Hypoxia` |
+| Hypoxia-induced genes (panel c) | siCtrl_Normoxia, siCtrl_Hypoxia | siCtrl_Normoxia | `group, siCtrl_Hypoxia, siCtrl_Normoxia` |
+
+Use design `~group`. For the knockdown comparison, the Hallmark pathways reported in the paper (hypoxia, E2F targets, G2M checkpoint, ...) appear as **negative** NES: lower after knockdown, which is the same finding.
