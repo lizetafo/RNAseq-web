@@ -18,12 +18,40 @@ Open `app.R` in RStudio and click **Run App**.
 
 ![Upload and settings](screenshots/1_upload_and_settings.png)
 
-1. **Upload Counts File**: raw counts, genes × samples (CSV, TSV or TXT). See [input format](../example_data/README.md#input-format).
-2. **Upload Metadata File**: one row per sample, in the same order as the count columns.
-3. Leave **Convert NA in counts to zero** ticked unless you want the app to stop on missing values.
-   **No data?** Click **Or load example data (prostate hypoxia)** instead of steps 1–4.
+There are three ways to get data in. Choose **Data source** at the top of the sidebar:
 
-4. Click **Upload**. The app checks that sample names match, removes stray spaces from group labels, then detects the grouping column (the first metadata column with 2–10 groups) and fills in the settings below.
+**A. Load from GEO.** Choose **Load from GEO**, type a series number such as `GSE106305`, and click **Load from GEO**. The app downloads NCBI's raw counts for that study and builds the sample sheet from the study's sample information (for example cell line and treatment). The organism and ID type (Entrez) are set for you. This works for human and mouse RNA-seq studies that NCBI has processed: look for **"Download RNA-seq counts"** on the study's GEO page. NCBI uses one standard pipeline, so counts can differ slightly from the original paper.
+
+**B. Upload files.**
+1. **Upload Counts File(s)**, any of:
+   - one count table (genes × samples)
+   - a featureCounts output (the Chr/Start/End/Strand/Length columns are removed automatically)
+   - several per-sample count files from HTSeq or STAR (select them all at once; they are merged)
+   - a GEO `_RAW.tar` bundle of per-sample count files
+
+   CSV, TSV, TXT and `.gz` are accepted. See [input format](../example_data/README.md#input-format).
+2. **Upload Metadata File (optional)**: one row per sample. If you don't have one, leave it empty and fill in the sample sheet in the app (below).
+3. Leave **Convert NA in counts to zero** ticked unless you want the app to stop on missing values. Tick **Round estimated counts** only for RSEM or Salmon estimated counts.
+4. Click **Upload**.
+
+**C. Example data.** Click **Or load example data (prostate hypoxia)**.
+
+The app checks the data before going further:
+- **Normalized data is refused.** If values are not whole numbers (FPKM, RPKM, TPM, CPM) or are negative (log values), the app stops and explains why. DESeq2 needs raw counts.
+- Sample names must match between counts and metadata. Metadata in a different order is reordered automatically.
+- Stray spaces in group labels are removed.
+
+It then detects the grouping column (the first column with 2–10 groups and replicates) and fills in the settings below.
+
+**Sample Sheet tab.** This tab shows the sample information, and you can edit it:
+- **Double-click a cell** to change it.
+- **Add column** creates a new grouping column (for example `Condition`) to fill in.
+- **Use this sample sheet** applies your changes and re-detects the design.
+- **Download sample sheet** saves it as CSV for next time.
+
+If no usable grouping is found (for example when you upload counts only), the app opens this tab and asks you to fill it in.
+
+![Sample sheet](screenshots/11_sample_sheet.png)
 
 5. **Choose the control group** in **Reference level (control group)**. The app does not guess it. The **contrast** then fills in automatically (case first, control last). Check the other settings:
 
@@ -43,8 +71,15 @@ With contrast `Condition, Hypoxia, Normoxia`, a **positive log2 fold change mean
 - **log2FC threshold** and **adjusted p-value threshold** for the plots: which genes are colored as significant on the volcano plot.
 - **Transformation for heatmap**: normalized counts, VST or rlog. VST and rlog stabilize the variance of low counts, and VST is a good default.
 - **Number of top genes**: how many genes to label and show in the heatmap and bar plot.
+- **Shrink log2 fold changes** (optional): makes fold changes of low-count genes more reliable, so noisy genes don't top the bar plot. P-values do not change. It is not available for designs with interaction terms.
+
+**Analyze a subset of samples (optional).** Choose a metadata column, for example `CellLine`, then keep only the values you want, for example `PC3`. Design factors with a single value left are removed from the design automatically, and the app tells you.
 
 6. Click **Run**. If no control group is chosen, the app asks for one. DESeq2 usually takes from a few seconds to about a minute.
+
+A blue **Notes on this analysis** box above the tabs lists anything important about the run: the subset used, factors removed from the design, groups with fewer than 3 replicates, and whether fold changes were shrunk.
+
+**Result to show (advanced).** After a run, this list shows every DESeq2 coefficient. Pick one, such as an interaction term, to see its results without re-running. Example: design `~CellLine + Condition + CellLine:Condition` and result `CellLinePC3.ConditionHypoxia` shows genes whose hypoxia response differs between PC3 and LNCaP.
 
 > **Privacy:** the online version runs on Posit Connect Cloud, so uploaded files are processed on Posit's servers during your session. The app does not save them. Do not upload confidential, unpublished or patient-identifiable data online; run the app on your own computer instead.
 
@@ -94,7 +129,20 @@ Pick any gene, by typing its name or ID, to see its normalized counts in each gr
 
 ![Gene explorer](screenshots/9_gene_explorer.png)
 
-## 7. Results tables
+## 7. Pathway analysis (GSEA)
+
+The **Pathways (GSEA)** tab ranks every gene by its DESeq2 test statistic and tests the 50 MSigDB Hallmark pathways with fgsea.
+- **Bar plot:** normalized enrichment score (NES) of the top pathways. Positive = higher in the case group. Faded bars are not significant.
+- **Enrichment plot:** pick a pathway to see where its genes fall in the ranking. A peak on the left means the genes are mostly up in the case group.
+- **Table:** NES, p-value, adjusted p-value, gene set size and leading-edge genes (the genes driving the result), downloadable as CSV.
+
+Available for human data. Mouse and rat genes are matched to the human gene sets by symbol, which is approximate.
+
+![Pathway analysis](screenshots/10_pathways_gsea.png)
+
+**Example:** with the prostate data, keeping only PC3 cells, **HYPOXIA** is the top pathway (NES 2.7, padj ≈ 3e-45), followed by glycolysis and mTORC1 signaling. That's the expected biology for cells grown in low oxygen.
+
+## 8. Results tables
 
 ![Results tables](screenshots/5_results_tables.png)
 

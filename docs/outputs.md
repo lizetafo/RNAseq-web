@@ -38,3 +38,14 @@ Counts divided by DESeq2 size factors, so samples sequenced to different depths 
 
 ## Gene Explorer
 Normalized counts (+0.5, log scale) of one chosen gene per sample, grouped by the first experimental factor, with its DESeq2 statistics (baseMean, log2FoldChange, lfcSE, pvalue, padj).
+
+## Pathway analysis (GSEA)
+| Column | Meaning |
+|---|---|
+| **pathway** | MSigDB Hallmark gene set (prefix `HALLMARK_` removed) |
+| **NES** | Normalized enrichment score. Positive = genes in the set are mostly higher in the case group; negative = mostly lower |
+| **pval / padj** | GSEA p-value and Benjamini–Hochberg adjusted p-value |
+| **size** | Number of genes from the set found in your data |
+| **leadingEdge** | The genes that drive the enrichment score |
+
+The **enrichment plot** shows the running enrichment score (green line) along all genes ranked from most up to most down in the case group. Black ticks mark the pathway's genes.

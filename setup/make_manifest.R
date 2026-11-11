@@ -12,7 +12,7 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocMana
 
 # Every package the app can use must be installed here so it is recorded
 cran <- c("shiny", "dplyr", "ggplot2", "ggrepel", "forcats", "RColorBrewer", "circlize", "DT")
-bioc <- c("DESeq2", "AnnotationDbi", "ComplexHeatmap",
+bioc <- c("DESeq2", "AnnotationDbi", "ComplexHeatmap", "fgsea",
           "org.Hs.eg.db", "org.Mm.eg.db", "org.Rn.eg.db",
           "org.Dm.eg.db", "org.Dr.eg.db", "org.Sc.sgd.db")
 missing_cran <- cran[!vapply(cran, requireNamespace, logical(1), quietly = TRUE)]
@@ -27,6 +27,7 @@ rsconnect::writeManifest(
   appDir = ".",
   appFiles = c("app.R",
                "example_data/prostate_hypoxia/counts.csv",
-               "example_data/prostate_hypoxia/metadata.csv")
+               "example_data/prostate_hypoxia/metadata.csv",
+               "gene_sets/hallmark_human.csv")
 )
 cat("\nmanifest.json created. Upload it to GitHub, in the same folder as app.R.\n")

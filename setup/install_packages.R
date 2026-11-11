@@ -10,7 +10,7 @@ install.packages(c("shiny", "dplyr", "ggplot2", "ggrepel", "forcats",
                    "RColorBrewer", "circlize", "DT"))
 
 # DESeq2, annotation and heatmap packages, plus the human gene database.
-BiocManager::install(c("DESeq2", "AnnotationDbi", "ComplexHeatmap", "org.Hs.eg.db"),
+BiocManager::install(c("DESeq2", "AnnotationDbi", "ComplexHeatmap", "fgsea", "org.Hs.eg.db"),
                      ask = FALSE, update = FALSE)
 
 # Other organisms are installed automatically the first time you select

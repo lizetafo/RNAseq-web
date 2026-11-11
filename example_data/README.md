@@ -7,7 +7,7 @@ Two ready-to-use datasets. Each folder has a raw count matrix (`counts.csv`, gen
 | `prostate_hypoxia/` | Human | Ensembl (`ENSG…`) | 8 (4 + 4) | PC3 and LNCaP prostate cancer cells, **Hypoxia vs Normoxia** | Human · ENSEMBL · design `~Condition` · control group `Normoxia` · contrast `Condition, Hypoxia, Normoxia`. Also try `~CellLine + Condition` (groups `Condition, CellLine`) |
 | `tumor_vs_normal/` | Human | Ensembl | 37 (18 cancer + 19 normal) | **colorectal cancer vs normal colon** | Human · ENSEMBL · `~type` · control group `normal` · contrast `type, cancer, normal` |
 
-`prostate_hypoxia/metadata.csv` includes a `CellLine` column (LNCaP or PC3, taken from the sample names), so you can compare a one-factor design (`~Condition`) with a two-factor design that accounts for cell line (`~CellLine + Condition`). The **Quality Control** tab shows why the second is better for these data.
+`prostate_hypoxia/metadata.csv` includes a `CellLine` column (LNCaP or PC3, taken from the sample names), so you can compare a one-factor design (`~Condition`) with a two-factor design that accounts for cell line (`~CellLine + Condition`). The **Quality Control** tab shows why the second is better for these data. To analyze one cell line on its own, as the original study did for PC3, use **Analyze a subset of samples** → `CellLine` → `PC3`. Note that each group has only 2 replicates, so the app shows a low-replication warning.
 
 ## Data sources
 Public datasets from NCBI GEO, reduced to the samples used here:
@@ -23,13 +23,15 @@ Public datasets from NCBI GEO, reduced to the samples used here:
 
 ## Input format
 
-**Counts:** first column = gene IDs; one column per sample; raw integer counts (for example from featureCounts or HTSeq). Do not use normalized values such as TPM or FPKM.
+**Counts:** first column = gene IDs; one column per sample; raw integer counts (for example from featureCounts or HTSeq). Normalized values such as TPM or FPKM are refused, because DESeq2 needs raw counts.
+
+The app also accepts featureCounts output, several per-sample HTSeq or STAR count files (merged automatically), a GEO `_RAW.tar` bundle, and `.gz` files. You can also skip files entirely and use **Load from GEO**.
 ```
 GeneID,Sample1,Sample2,Sample3
 ENSG00000000003,348,609,693
 ```
 
-**Metadata:** first column = sample names, matching the count column names **exactly and in the same order**; then one column per experimental factor.
+**Metadata (optional):** first column = sample names, matching the count column names **exactly** (a different order is fixed automatically); then one column per experimental factor. Without a metadata file, fill in the sample sheet in the app's **Sample Sheet** tab.
 ```
 ID,Condition
 Sample1,Normoxia

@@ -14,14 +14,20 @@ No installation needed. Click **Or load example data** to explore it with a publ
 ---
 
 ## ✨ Features
-- **Flexible input:** count matrices and sample sheets as CSV, TSV or TXT, up to 1 GB
-- **Built-in checks:** missing or mismatched samples, sample order, duplicated samples and gene IDs, missing counts
+- **Load straight from GEO:** type a GSE number to load NCBI's raw counts and build the sample sheet from the study's sample information (human and mouse studies processed by NCBI)
+- **Flexible input:** a count matrix, featureCounts output, several per-sample HTSeq/STAR count files, or a GEO `_RAW.tar` bundle; CSV, TSV or TXT, also `.gz`; up to 1 GB
+- **No sample sheet needed:** fill one in inside the app (Sample Sheet tab) and download it
+- **Built-in checks:** stops on normalized data (FPKM, TPM, log values), which DESeq2 cannot use; missing or mismatched samples, sample order, duplicated samples and gene IDs, missing counts
 - **Guided design setup:** detects the grouping factor and design formula, asks you to choose the control group, then fills in the contrast, all editable
 - **Multi-factor designs**, for example `~CellLine + Condition`
 - **Gene annotation** for human, mouse, rat, fly, zebrafish and yeast, or any other Bioconductor organism package, from Ensembl, Entrez or symbol IDs. Each organism database is downloaded only the first time it is used.
 - **Quality control:** PCA, sample-to-sample distance heatmap, library sizes, dispersion plot and p-value histogram
 - **Result plots:** volcano plot with labeled top genes, MA plot, clustered heatmap (normalized, VST or rlog) and bar plot
 - **Gene Explorer:** pick any gene to see its counts per group and its statistics
+- **Pathway analysis (GSEA):** ranks all genes and tests the 50 MSigDB Hallmark pathways with fgsea, with an enrichment plot for each pathway
+- **Sample subsets:** analyze only some samples, for example one cell line, without editing your files
+- **Fold-change shrinkage** (optional) and **advanced results**, such as interaction terms
+- **Warnings** when groups have fewer than 3 replicates
 - **Example data built in:** one click loads a public dataset to try the app
 - **Every plot downloadable** as PNG
 - **Tables:** annotated results, raw DESeq2 results and normalized counts, all downloadable
@@ -38,8 +44,10 @@ No installation needed. Click **Or load example data** to explore it with a publ
 
 Step-by-step instructions with screenshots: **[docs/user_guide.md](docs/user_guide.md)**
 
-## 🔬 Quality control and gene explorer
+## 🔬 Quality control and pathway analysis
 ![PCA in the Quality Control tab](docs/screenshots/6_qc_pca.png)
+
+![Pathway analysis (GSEA)](docs/screenshots/10_pathways_gsea.png)
 
 ## 🌐 Online version
 The app can be hosted free on Posit Connect Cloud, so anyone can use it from a link: see [docs/deploy_connect_cloud.md](docs/deploy_connect_cloud.md).
@@ -72,13 +80,14 @@ For both datasets, the app's results were compared with DESeq2 run directly. Eve
 │   ├── deploy_connect_cloud.md   # how to put the app online
 │   └── screenshots/
 ├── example_data/                 # 2 example datasets (counts + metadata)
+├── gene_sets/                    # MSigDB Hallmark gene sets used for pathway analysis
 └── validation/
     ├── VALIDATION.md
     └── compare_to_deseq2.R       # re-runs the comparison
 ```
 
 ## 🛠️ Built with
-R · Shiny · DESeq2 · AnnotationDbi · ComplexHeatmap · ggplot2 · ggrepel · dplyr · DT
+R · Shiny · DESeq2 · fgsea · AnnotationDbi · ComplexHeatmap · ggplot2 · ggrepel · dplyr · DT
 
 ## 👩🏾‍🔬 Author
 **Elizabeth Etafo**, Ph.D. candidate, Pharmaceutical Sciences, University of Nebraska Medical Center
